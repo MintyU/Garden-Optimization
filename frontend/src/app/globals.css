@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .game-text-stroke {
+    text-shadow: 
+      -1px -1px 0 rgba(0,0,0,0.8),  
+       1px -1px 0 rgba(0,0,0,0.8),
+      -1px  1px 0 rgba(0,0,0,0.8),
+       1px  1px 0 rgba(0,0,0,0.8),
+       0px  3px 4px rgba(0,0,0,0.5);
+  }
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+}
