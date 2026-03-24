@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { Play, Dice5, MapPin, Bug, Zap, Ghost, MousePointer2, Sparkles, RefreshCcw, Trash2, Paintbrush, CheckCircle2 } from "lucide-react";
+import { Play, Dice5, MapPin, Bug, Zap, Ghost, MousePointer2, Sparkles, RefreshCcw, Trash2, Paintbrush, CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
 
 // --- Types ---
 type EffectType = "NONE" | "ROCKET" | "MOLE_2" | "MOLE_3" | "QUESTION" | "SPRING";
@@ -50,6 +50,9 @@ export default function Home() {
   const [result, setResult] = useState<StrategyResult | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
 
+  // Special Dice Outcome Selection States
+  const [selectedAnalysisIndex, setSelectedAnalysisIndex] = useState<number | null>(null);
+  const [selectedOutcomes, setSelectedOutcomes] = useState<Record<number, number>>({});
   useEffect(() => {
     const saved = localStorage.getItem("gardenState");
     if (saved) {
@@ -74,17 +77,32 @@ export default function Home() {
 
   // --- Logic: Strategy Engine (Converted from Kotlin) ---
 
-  const getNextPosition = (current: number, move: number, currentTiles: Tile[]): number => {
-    let next = (current + move) % 40;
+  const getNextPosition = (current: number, move: number, currentTiles: Tile[]): { pos: number, laps: number } => {
+    let nextRaw = current + move;
+    let stepLaps = 0;
+    if (nextRaw >= 40) {
+      stepLaps = Math.floor(nextRaw / 40);
+    }
+
+    let next = nextRaw % 40;
     if (next < 0) next += 40;
 
     const tile = currentTiles[next];
     switch (tile.effect) {
-      case "ROCKET": return getNextPosition(next, 10, currentTiles);
-      case "MOLE_2": return getNextPosition(next, -2, currentTiles);
-      case "MOLE_3": return getNextPosition(next, -3, currentTiles);
-      case "SPRING": return getNextPosition(next, 3, currentTiles);
-      default: return next;
+      case "ROCKET": 
+        const rRes = getNextPosition(next, 10, currentTiles);
+        return { pos: rRes.pos, laps: stepLaps + rRes.laps };
+      case "MOLE_2": 
+        const m2Res = getNextPosition(next, -2, currentTiles);
+        return { pos: m2Res.pos, laps: stepLaps + m2Res.laps };
+      case "MOLE_3": 
+        const m3Res = getNextPosition(next, -3, currentTiles);
+        return { pos: m3Res.pos, laps: stepLaps + m3Res.laps };
+      case "SPRING": 
+        const sRes = getNextPosition(next, 3, currentTiles);
+        return { pos: sRes.pos, laps: stepLaps + sRes.laps };
+      default: 
+        return { pos: next, laps: stepLaps };
     }
   };
 
@@ -113,43 +131,46 @@ export default function Home() {
     return perms;
   };
 
+  const getSpecialOutcomes = (D: number) => [
+    { move: D * 2, mul: 1, label: "이동 x2" },
+    { move: D * 3, mul: 1, label: "이동 x3" },
+    { move: D, mul: 2, label: "보상 x2" },
+    { move: D - 5, mul: 1, label: "이동 -5" },
+    { move: D - 10, mul: 1, label: "이동 -10" },
+    { move: D * -3, mul: 1, label: "뒤로 x3" }
+  ];
+
+  type OutcomeItem = { move: number, mul: number, original: number };
+
+  const evaluateOutcome = (outcome: OutcomeItem[], startPos: number, beeExpiry: number, currentTiles: Tile[]) => {
+    let maxScore = -100000;
+    let bestFinalPos = 0;
+    let bestPerm: number[] = [];
+    const perms = generatePermutations(outcome);
+    for (const perm of perms) {
+      let tempPos = startPos;
+      let tempTotal = 0;
+      perm.forEach((die, idx) => {
+        const nextResult = getNextPosition(tempPos, die.move, currentTiles);
+        tempPos = nextResult.pos;
+        tempTotal += (getFinalReward(tempPos, idx + 1, beeExpiry, currentTiles) * die.mul) + (nextResult.laps * 400);
+      });
+      if (tempTotal > maxScore) {
+        maxScore = tempTotal;
+        bestFinalPos = tempPos;
+        bestPerm = perm.map(d => d.original);
+      }
+    }
+    return { maxScore, bestFinalPos, bestPerm };
+  };
+
   const calculateOptimalPath = () => {
     const dice = diceValues;
-
-    const getSpecialOutcomes = (D: number) => [
-      { move: D * 2, mul: 1 },
-      { move: D * 3, mul: 1 },
-      { move: D, mul: 2 },
-      { move: D - 5, mul: 1 },
-      { move: D - 10, mul: 1 },
-      { move: D * -3, mul: 1 }
-    ];
-
-    type OutcomeItem = { move: number, mul: number, original: number };
-
-    const evaluateOutcome = (outcome: OutcomeItem[]) => {
-      let maxScore = -1;
-      let bestFinalPos = 0;
-      let bestPerm: number[] = [];
-      const perms = generatePermutations(outcome);
-      for (const perm of perms) {
-        let tempPos = currentPos;
-        let tempTotal = 0;
-        perm.forEach((die, idx) => {
-          tempPos = getNextPosition(tempPos, die.move, tiles);
-          tempTotal += getFinalReward(tempPos, idx + 1, beeMoves, tiles) * die.mul;
-        });
-        if (tempTotal > maxScore) {
-          maxScore = tempTotal;
-          bestFinalPos = tempPos;
-          bestPerm = perm.map(d => d.original);
-        }
-      }
-      return { maxScore, bestFinalPos, bestPerm };
-    };
+    setSelectedAnalysisIndex(null);
+    setSelectedOutcomes({});
 
     const baseOutcome: OutcomeItem[] = dice.map(d => ({ move: d, mul: 1, original: d }));
-    const baseResult = evaluateOutcome(baseOutcome);
+    const baseResult = evaluateOutcome(baseOutcome, currentPos, beeMoves, tiles);
 
     const subsets = [
       [], [0], [1], [2], [0, 1], [0, 2], [1, 2], [0, 1, 2]
@@ -174,7 +195,7 @@ export default function Home() {
       let loseCount = 0;
 
       outcomes.forEach(outcome => {
-        const { maxScore } = evaluateOutcome(outcome);
+        const { maxScore } = evaluateOutcome(outcome, currentPos, beeMoves, tiles);
         totalMaxScore += maxScore;
         if (maxScore > maxPossible) maxPossible = maxScore;
         if (maxScore > baseResult.maxScore) winCount++;
@@ -250,6 +271,8 @@ export default function Home() {
             setCurrentPos(0);
             setBeeMoves(10);
             setResult(null);
+            setSelectedAnalysisIndex(null);
+            setSelectedOutcomes({});
           }
         }} className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-xs font-black text-rose-500 hover:bg-rose-50 active:scale-95 transition-all shadow-sm">보드 초기화</button>
       </header>
@@ -409,34 +432,104 @@ export default function Home() {
                     <div className="bg-slate-900 text-white p-5 rounded-[2rem] shadow-xl shrink-0">
                       <h4 className="text-sm md:text-base font-black mb-4 flex items-center justify-center xl:justify-start gap-2 text-purple-400"><Sparkles size={16} /> 특수 기대값 분석 (Top 3)</h4>
                       <div className="space-y-3">
-                        {result.specialAnalyses.slice(0, 3).map((analysis, i) => (
-                          <div key={i} className="flex flex-row items-center justify-between bg-slate-800 p-3 md:p-4 rounded-xl shadow-inner gap-2 md:gap-3 border border-slate-700 hover:border-slate-500 transition-colors">
-                              <div className="flex-1 text-left flex flex-col justify-center">
-                                <div className="flex items-center gap-2 mb-1.5 md:mb-2">
-                                  <span className="text-[9px] md:text-[10px] font-black text-slate-400">대상 주사위</span>
-                                  <div className="flex gap-1.5">
-                                    {diceValues.map((val, dIdx) => {
-                                      const isTarget = analysis.targetIndices.includes(dIdx);
-                                      return (
-                                        <div key={dIdx} className={`w-5 h-5 md:w-6 md:h-6 flex items-center justify-center rounded-[6px] font-black text-[10px] md:text-xs border transition-all ${isTarget ? 'bg-purple-600 border-purple-400 text-white shadow-[0_0_10px_rgba(168,85,247,0.7)] scale-110 z-10' : 'bg-slate-700 border-slate-600 text-slate-400 opacity-50'}`}>
-                                          {val}
-                                        </div>
-                                      );
-                                    })}
+                        {result.specialAnalyses.slice(0, 3).map((analysis, i) => {
+                          const isExpanded = selectedAnalysisIndex === i;
+                          const isSelectedAll = analysis.targetIndices.every(t => selectedOutcomes[t] !== undefined);
+                          
+                          let specificResult = null;
+                          if (isExpanded && isSelectedAll) {
+                            const customOutcome = diceValues.map((d, dIdx) => {
+                              if (analysis.targetIndices.includes(dIdx)) {
+                                const outcomeKey = selectedOutcomes[dIdx];
+                                const effect = getSpecialOutcomes(d)[outcomeKey];
+                                return { move: effect.move, mul: effect.mul, original: d };
+                              }
+                              return { move: d, mul: 1, original: d };
+                            });
+                            specificResult = evaluateOutcome(customOutcome, currentPos, beeMoves, tiles);
+                          }
+
+                          return (
+                            <div key={i} className="flex flex-col bg-slate-800 rounded-xl shadow-inner border border-slate-700 hover:border-slate-500 transition-colors overflow-hidden">
+                              <div 
+                                onClick={() => {
+                                  if (selectedAnalysisIndex === i) {
+                                    setSelectedAnalysisIndex(null);
+                                  } else {
+                                    setSelectedAnalysisIndex(i);
+                                    setSelectedOutcomes({});
+                                  }
+                                }}
+                                className="flex flex-row items-center justify-between p-3 md:p-4 gap-2 md:gap-3 cursor-pointer select-none"
+                              >
+                                <div className="flex-1 text-left flex flex-col justify-center gap-1">
+                                  <div className="flex items-center gap-2 mb-1.5 md:mb-2">
+                                    <span className="text-[10px] md:text-xs font-black text-slate-400">대상 주사위</span>
+                                    <div className="flex gap-1.5">
+                                      {diceValues.map((val, dIdx) => {
+                                        const isTarget = analysis.targetIndices.includes(dIdx);
+                                        return (
+                                          <div key={dIdx} className={`w-6 h-6 md:w-7 md:h-7 flex items-center justify-center rounded-[6px] font-black text-xs md:text-sm border transition-all ${isTarget ? 'bg-purple-600 border-purple-400 text-white shadow-[0_0_10px_rgba(168,85,247,0.7)] scale-110 z-10' : 'bg-slate-700 border-slate-600 text-slate-400 opacity-50'}`}>
+                                            {val}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                    {isExpanded ? <ChevronUp size={18} className="text-slate-400 ml-auto" /> : <ChevronDown size={18} className="text-slate-400 ml-auto" />}
+                                  </div>
+                                  <div className="flex items-center justify-start gap-2 md:gap-4 text-[10px] md:text-xs font-bold text-slate-500 bg-slate-900/50 p-1.5 md:p-2 rounded-lg inline-flex w-fit">
+                                    <span className="text-green-400">경신: {analysis.winProb.toFixed(0)}%</span>
+                                    <span className="text-rose-400">하락: {analysis.loseProb.toFixed(0)}%</span>
                                   </div>
                                 </div>
-                                <div className="flex items-center justify-start gap-2 md:gap-4 text-[8px] md:text-[10px] font-bold text-slate-500 bg-slate-900/50 p-1.5 md:p-2 rounded-lg inline-flex w-fit">
-                                <span className="text-green-400">경신: {analysis.winProb.toFixed(0)}%</span>
-                                <span className="text-rose-400">하락: {analysis.loseProb.toFixed(0)}%</span>
+                                <div className="text-right pointer-events-none">
+                                  <p className="text-[10px] md:text-xs font-black text-slate-400 uppercase">기대 평균</p>
+                                  <p className="text-xl md:text-3xl font-black text-purple-300 leading-none my-1">{Math.floor(analysis.expectedValue).toLocaleString()}</p>
+                                  <p className="text-[10px] md:text-xs text-slate-500 font-bold mt-1">최대: {Math.floor(analysis.maxPossible).toLocaleString()}</p>
+                                </div>
                               </div>
+                              
+                              {isExpanded && (
+                                <div className="p-2 md:p-3 bg-slate-900/80 border-t border-slate-700 flex flex-col gap-2 relative">
+                                  <div className="flex flex-wrap items-center gap-1.5 md:gap-2">
+                                    {analysis.targetIndices.map(tIdx => (
+                                      <div key={tIdx} onClick={(e) => e.stopPropagation()} className="flex-1 min-w-[90px] max-w-[150px] flex items-center gap-1.5 bg-slate-800 p-1 md:p-1.5 rounded-lg border border-slate-700/50 shadow-inner md:py-1.5 md:px-2">
+                                        <span className="bg-purple-600 text-white w-6 h-6 flex shrink-0 items-center justify-center rounded-[6px] font-black text-xs md:text-sm shadow-sm">{diceValues[tIdx]}</span>
+                                        <select
+                                          value={selectedOutcomes[tIdx] ?? ""}
+                                          onChange={(e) => {
+                                            e.stopPropagation();
+                                            setSelectedOutcomes(prev => ({ ...prev, [tIdx]: Number(e.target.value) }));
+                                          }}
+                                          className="w-full bg-slate-900 text-slate-300 text-[10px] md:text-xs font-bold py-1 px-1.5 rounded outline-none border border-slate-700 cursor-pointer appearance-none text-center md:py-1.5"
+                                          style={{ backgroundImage: 'url(\'data:image/svg+xml;charset=UTF-8,%3csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%2394a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"%3e%3cpolyline points="6 9 12 15 18 9"%3e%3c/polyline%3e%3c/svg%3e\')', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 4px center', backgroundSize: '12px', paddingRight: '16px' }}
+                                        >
+                                          <option value="" disabled>선택</option>
+                                          {getSpecialOutcomes(diceValues[tIdx]).map((eff, effIdx) => (
+                                            <option key={effIdx} value={effIdx}>{eff.label}</option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  {isSelectedAll && specificResult && (
+                                    <div className="mt-1 bg-gradient-to-r from-purple-900/40 to-slate-900/40 p-2.5 md:p-3 rounded-xl border border-purple-500/30 flex items-center justify-between shadow-inner">
+                                      <div className="flex flex-col justify-center">
+                                        <p className="text-[10px] md:text-xs font-black text-purple-300/80 uppercase mb-1">맞춤 최적 순서</p>
+                                        <p className="text-lg md:text-2xl font-black italic text-white tracking-widest drop-shadow-md leading-none">{specificResult.bestPerm.join(" ➔ ")}</p>
+                                      </div>
+                                      <div className="text-right flex flex-col justify-center">
+                                        <p className="text-[10px] md:text-xs font-black text-purple-300/80 uppercase mb-1">상황 맞춤 점수</p>
+                                        <p className="text-lg md:text-2xl font-black text-green-400 drop-shadow-md leading-none">{Math.floor(specificResult.maxScore).toLocaleString()} <span className="text-[10px] md:text-xs opacity-60 text-white font-bold ml-1">PTS</span></p>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
-                            <div className="text-right">
-                              <p className="text-[8px] md:text-[10px] font-black text-slate-400 uppercase">기대 평균</p>
-                              <p className="text-lg md:text-2xl font-black text-purple-300 leading-none my-1">{Math.floor(analysis.expectedValue).toLocaleString()}</p>
-                              <p className="text-[8px] md:text-[10px] text-slate-500 font-bold mt-1">최대: {Math.floor(analysis.maxPossible).toLocaleString()}</p>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
