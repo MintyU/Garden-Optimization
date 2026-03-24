@@ -165,6 +165,46 @@ export default function Home() {
   };
 
   const calculateOptimalPath = () => {
+    let count100 = 0, count300 = 0, count400 = 0, count600 = 0;
+    let countMole2 = 0, countMole3 = 0, countSpring = 0;
+    let countGolden = 0, countHomun = 0, countMystic = 0;
+
+    tiles.forEach(t => {
+      if (t.index === 0 || t.index === 10 || t.index === 20 || t.index === 30) return;
+      
+      const isEffectTile = (t.effect === 'MOLE_2' || t.effect === 'MOLE_3' || t.effect === 'SPRING');
+      if (!isEffectTile) {
+        if (t.reward === 100) count100++;
+        if (t.reward === 300) count300++;
+        if (t.reward === 400) count400++;
+        if (t.reward === 600) count600++;
+      }
+
+      if (t.effect === 'MOLE_2') countMole2++;
+      if (t.effect === 'MOLE_3') countMole3++;
+      if (t.effect === 'SPRING') countSpring++;
+      if (t.modifier === 'GOLDEN_BEE') countGolden++;
+      if (t.modifier === 'HOMUNCULUS') countHomun++;
+      if (t.modifier === 'MYSTERIOUS_BEE') countMystic++;
+    });
+
+    const errors: string[] = [];
+    if (count100 !== 8) errors.push(`- 100점 발판: 현재 ${count100}개 (필요: 8개)`);
+    if (count300 !== 10) errors.push(`- 300점 발판: 현재 ${count300}개 (필요: 10개)`);
+    if (count400 !== 10) errors.push(`- 400점 발판: 현재 ${count400}개 (필요: 10개)`);
+    if (count600 !== 5) errors.push(`- 600점 발판: 현재 ${count600}개 (필요: 5개)`);
+    if (countMole2 !== 1) errors.push(`- 두더지(-2칸): 현재 ${countMole2}개 (필수: 1개)`);
+    if (countMole3 !== 1) errors.push(`- 두더지(-3칸): 현재 ${countMole3}개 (필수: 1개)`);
+    if (countSpring !== 1) errors.push(`- 스프링(+3칸): 현재 ${countSpring}개 (필수: 1개)`);
+    if (countGolden !== 1) errors.push(`- 황금벌 몬스터: 현재 ${countGolden}개 (필수: 1개)`);
+    if (countHomun !== 1) errors.push(`- 호문스 몬스터: 현재 ${countHomun}개 (필수: 1개)`);
+    if (countMystic > 1) errors.push(`- 신비벌 몬스터: 현재 ${countMystic}개 (최대: 1개)`);
+
+    if (errors.length > 0) {
+      alert("⚠️ 보드 셋팅 설정 조건이 맞지 않습니다!\n\n" + errors.join("\n") + "\n\n조건을 모두 충족해야 계산이 가능합니다.");
+      return;
+    }
+
     const dice = diceValues;
     setSelectedAnalysisIndex(null);
     setSelectedOutcomes({});
@@ -240,16 +280,49 @@ export default function Home() {
     }
     if (index === 0 || index === 10 || index === 20 || index === 30) return;
     setTiles(prev => prev.map(t => {
-      if (t.index !== index) return t;
-      if (activeBrush === "REWARD") return { ...t, reward: brushReward };
+      // 보상 브러시 처리
+      if (activeBrush === "REWARD") {
+        if (t.index === index) return { ...t, reward: brushReward };
+        return t;
+      }
+      
+      // 효과 브러시 처리
       if (activeBrush === "EFFECT") {
-        return { ...t, effect: t.effect === brushEffect ? "NONE" : brushEffect };
+        if (t.index === index) {
+          return { ...t, effect: t.effect === brushEffect ? "NONE" : brushEffect };
+        }
+        // 다른 타일에 이미 해당 효과가 칠해져 있다면 초기화 (단일 존재 보장)
+        if (brushEffect !== "NONE" && t.effect === brushEffect) {
+          return { ...t, effect: "NONE" };
+        }
+        return t;
       }
+      
+      // 몬스터 브러시 처리
       if (activeBrush === "MODIFIER") {
-        return { ...t, modifier: t.modifier === brushModifier ? "NONE" : brushModifier };
+        if (t.index === index) {
+          return { ...t, modifier: t.modifier === brushModifier ? "NONE" : brushModifier };
+        }
+        // 다른 타일에 이미 해당 몬스터가 칠해져 있다면 초기화 (단일 존재 보장)
+        if (brushModifier !== "NONE" && t.modifier === brushModifier) {
+          return { ...t, modifier: "NONE" };
+        }
+        return t;
       }
+      
       return t;
     }));
+  };
+
+  const applyTurn = (nextPos: number) => {
+    setCurrentPos(nextPos);
+    setBeeMoves(prev => Math.max(0, prev - 3));
+    setResult(null);
+    setSelectedAnalysisIndex(null);
+    setSelectedOutcomes({});
+    setActiveBrush("MODIFIER");
+    setBrushModifier("HOMUNCULUS");
+    alert("✨ 다음 턴 준비 완료!\n\n1. 캐릭터가 도착 지점으로 이동했습니다.\n2. 신비벌 남은 횟수가 3 깎였습니다.\n3. 새롭게 이동한 호문쿨루스 위치를 맵에 클릭해주세요!\n4. 새로 굴린 주사위 3개를 입력하세요.");
   };
 
   return (
@@ -421,17 +494,20 @@ export default function Home() {
             </div>
             {result && (
               <div className="absolute inset-0 m-auto flex flex-col items-center justify-center pointer-events-none z-30">
-                <div className="w-[85%] max-h-[85%] max-w-2xl overflow-y-auto pointer-events-auto bg-white/90 backdrop-blur-xl rounded-[2.5rem] p-5 md:p-6 shadow-[0_0_50px_rgba(0,0,0,0.15)] border border-slate-200/50 animate-in zoom-in-95 duration-500 flex flex-col gap-4 mx-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-                  <div className="bg-green-600 rounded-[2rem] p-5 shadow-lg text-white border-b-4 border-green-800 flex flex-row items-center justify-around text-center gap-4 shrink-0">
-                    <div><p className="text-[10px] font-black text-green-200 uppercase mb-1">최적 주사위 순서</p><p className="text-3xl md:text-5xl font-black italic tracking-tighter">{result.order.join(" ➔ ")}</p></div>
-                    <div className="hidden md:block w-px h-12 bg-white/20" />
-                    <div><p className="text-[10px] font-black text-green-200 uppercase mb-1">확정 점수</p><p className="text-2xl md:text-4xl font-black">{Math.floor(result.totalReward).toLocaleString()} <span className="text-xs opacity-60">PTS</span></p></div>
+                <div className="w-[85%] max-h-[85%] max-w-2xl overflow-y-auto pointer-events-auto bg-white/90 backdrop-blur-xl rounded-[2.5rem] p-4 md:p-5 shadow-[0_0_50px_rgba(0,0,0,0.15)] border border-slate-200/50 animate-in zoom-in-95 duration-500 flex flex-col gap-3 mx-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                  <div className="bg-green-600 rounded-[1.5rem] p-3.5 md:p-4 shadow-lg text-white border-b-4 border-green-800 flex flex-col items-center gap-2.5 md:gap-3 shrink-0">
+                    <div className="flex flex-row items-center justify-around w-full text-center gap-3">
+                      <div><p className="text-[9px] md:text-[10px] font-black text-green-200 uppercase mb-0.5">최적 주사위 순서</p><p className="text-2xl md:text-4xl font-black italic tracking-tighter drop-shadow-sm">{result.order.join(" ➔ ")}</p></div>
+                      <div className="hidden md:block w-px h-10 bg-white/20" />
+                      <div><p className="text-[9px] md:text-[10px] font-black text-green-200 uppercase mb-0.5">확정 점수</p><p className="text-xl md:text-3xl font-black drop-shadow-sm">{Math.floor(result.totalReward).toLocaleString()} <span className="text-[9px] opacity-60">PTS</span></p></div>
+                    </div>
+                    <button onClick={() => applyTurn(result.finalPosition)} className="w-full py-1.5 md:py-2 bg-green-800/80 hover:bg-green-800 rounded-xl font-black text-[10px] md:text-[11px] text-green-50 shadow-sm transition-all border border-green-700">이 기본 경로로 다음 턴 넘어가기 ➔</button>
                   </div>
 
                   {result.specialAnalyses && result.specialAnalyses.length > 0 && (
-                    <div className="bg-slate-900 text-white p-5 rounded-[2rem] shadow-xl shrink-0">
-                      <h4 className="text-sm md:text-base font-black mb-4 flex items-center justify-center xl:justify-start gap-2 text-purple-400"><Sparkles size={16} /> 특수 기대값 분석 (Top 3)</h4>
-                      <div className="space-y-3">
+                    <div className="bg-slate-900 text-white p-4 md:p-5 rounded-[1.5rem] md:rounded-[2rem] shadow-xl shrink-0">
+                      <h4 className="text-[13px] md:text-[15px] font-black mb-3 flex items-center justify-center xl:justify-start gap-1.5 text-purple-400"><Sparkles size={15} /> 특수 기대값 분석 (Top 3)</h4>
+                      <div className="space-y-2.5">
                         {result.specialAnalyses.slice(0, 3).map((analysis, i) => {
                           const isExpanded = selectedAnalysisIndex === i;
                           const isSelectedAll = analysis.targetIndices.every(t => selectedOutcomes[t] !== undefined);
@@ -514,15 +590,18 @@ export default function Home() {
                                   </div>
 
                                   {isSelectedAll && specificResult && (
-                                    <div className="mt-1 bg-gradient-to-r from-purple-900/40 to-slate-900/40 p-2.5 md:p-3 rounded-xl border border-purple-500/30 flex items-center justify-between shadow-inner">
-                                      <div className="flex flex-col justify-center">
-                                        <p className="text-[10px] md:text-xs font-black text-purple-300/80 uppercase mb-1">맞춤 최적 순서</p>
-                                        <p className="text-lg md:text-2xl font-black italic text-white tracking-widest drop-shadow-md leading-none">{specificResult.bestPerm.join(" ➔ ")}</p>
+                                    <div className="mt-1 flex flex-col gap-1.5">
+                                      <div className="bg-gradient-to-r from-purple-900/40 to-slate-900/40 p-2.5 md:p-3 rounded-xl border border-purple-500/30 flex items-center justify-between shadow-inner">
+                                        <div className="flex flex-col justify-center">
+                                          <p className="text-[10px] md:text-xs font-black text-purple-300/80 uppercase mb-1">맞춤 최적 순서</p>
+                                          <p className="text-lg md:text-2xl font-black italic text-white tracking-widest drop-shadow-md leading-none">{specificResult.bestPerm.join(" ➔ ")}</p>
+                                        </div>
+                                        <div className="text-right flex flex-col justify-center">
+                                          <p className="text-[10px] md:text-xs font-black text-purple-300/80 uppercase mb-1">상황 맞춤 점수</p>
+                                          <p className="text-lg md:text-2xl font-black text-green-400 drop-shadow-md leading-none">{Math.floor(specificResult.maxScore).toLocaleString()} <span className="text-[10px] md:text-xs opacity-60 text-white font-bold ml-1">PTS</span></p>
+                                        </div>
                                       </div>
-                                      <div className="text-right flex flex-col justify-center">
-                                        <p className="text-[10px] md:text-xs font-black text-purple-300/80 uppercase mb-1">상황 맞춤 점수</p>
-                                        <p className="text-lg md:text-2xl font-black text-green-400 drop-shadow-md leading-none">{Math.floor(specificResult.maxScore).toLocaleString()} <span className="text-[10px] md:text-xs opacity-60 text-white font-bold ml-1">PTS</span></p>
-                                      </div>
+                                      <button onClick={() => applyTurn(specificResult!.bestFinalPos)} className="w-full py-2 bg-purple-700/50 hover:bg-purple-600 rounded-lg font-black text-[10px] md:text-xs text-purple-100 shadow-md transition-all border border-purple-500/50">이 특수 경로로 다음 턴 넘어가기 ➔</button>
                                     </div>
                                   )}
                                 </div>
