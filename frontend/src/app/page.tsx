@@ -26,6 +26,7 @@ interface StrategyResult {
   order: number[];
   totalReward: number;
   finalPosition: number;
+  usedEffects: string[];
   specialAnalyses?: SpecialAnalysis[];
 }
 
@@ -46,7 +47,7 @@ export default function Home() {
   const [tiles, setTiles] = useState<Tile[]>(initialTiles);
   const [diceValues, setDiceValues] = useState<number[]>([2, 3, 5]);
   const [currentPos, setCurrentPos] = useState(0);
-  const [beeMoves, setBeeMoves] = useState(10);
+  const [beeMoves, setBeeMoves] = useState(0);
   const [result, setResult] = useState<StrategyResult | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
 
@@ -57,6 +58,7 @@ export default function Home() {
   // Custom Validation Alert State
   type ValidationError = { name: string; current: number; required: number | "최대 1" };
   const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
+  const [turnAlert, setTurnAlert] = useState<boolean>(false);
 
   // Tutorial State
   const [tutorialStep, setTutorialStep] = useState(0);
@@ -97,7 +99,7 @@ export default function Home() {
 
   // --- Logic: Strategy Engine (Converted from Kotlin) ---
 
-  const getNextPosition = (current: number, move: number, currentTiles: Tile[]): { pos: number, laps: number } => {
+  const getNextPosition = (current: number, move: number, currentTiles: Tile[], activatedEffects: Set<string>, absoluteOffset: number): { pos: number, laps: number, nextAbsOffset: number } => {
     let nextRaw = current + move;
     let stepLaps = 0;
     if (nextRaw >= 40) {
@@ -107,28 +109,40 @@ export default function Home() {
     let next = nextRaw % 40;
     if (next < 0) next += 40;
 
+    let nextAbsOffset = absoluteOffset + move;
+    let currentLap = Math.floor(nextAbsOffset / 40);
+
     const tile = currentTiles[next];
-    switch (tile.effect) {
-      case "ROCKET": 
-        const rRes = getNextPosition(next, 10, currentTiles);
-        return { pos: rRes.pos, laps: stepLaps + rRes.laps };
-      case "MOLE_2": 
-        const m2Res = getNextPosition(next, -2, currentTiles);
-        return { pos: m2Res.pos, laps: stepLaps + m2Res.laps };
-      case "MOLE_3": 
-        const m3Res = getNextPosition(next, -3, currentTiles);
-        return { pos: m3Res.pos, laps: stepLaps + m3Res.laps };
-      case "SPRING": 
-        const sRes = getNextPosition(next, 3, currentTiles);
-        return { pos: sRes.pos, laps: stepLaps + sRes.laps };
-      default: 
-        return { pos: next, laps: stepLaps };
+    const effectKey = `${currentLap}_${next}`;
+
+    if (tile.effect === "ROCKET" && !activatedEffects.has(effectKey)) {
+      activatedEffects.add(effectKey);
+      const res = getNextPosition(next, 10, currentTiles, activatedEffects, nextAbsOffset);
+      return { pos: res.pos, laps: stepLaps + res.laps, nextAbsOffset: res.nextAbsOffset };
+    } else if (tile.effect === "MOLE_2" && !activatedEffects.has(effectKey)) {
+      activatedEffects.add(effectKey);
+      const res = getNextPosition(next, -2, currentTiles, activatedEffects, nextAbsOffset);
+      return { pos: res.pos, laps: stepLaps + res.laps, nextAbsOffset: res.nextAbsOffset };
+    } else if (tile.effect === "MOLE_3" && !activatedEffects.has(effectKey)) {
+      activatedEffects.add(effectKey);
+      const res = getNextPosition(next, -3, currentTiles, activatedEffects, nextAbsOffset);
+      return { pos: res.pos, laps: stepLaps + res.laps, nextAbsOffset: res.nextAbsOffset };
+    } else if (tile.effect === "SPRING" && !activatedEffects.has(effectKey)) {
+      activatedEffects.add(effectKey);
+      const res = getNextPosition(next, 3, currentTiles, activatedEffects, nextAbsOffset);
+      return { pos: res.pos, laps: stepLaps + res.laps, nextAbsOffset: res.nextAbsOffset };
+    } else {
+      return { pos: next, laps: stepLaps, nextAbsOffset: nextAbsOffset };
     }
   };
 
   const getFinalReward = (position: number, moveIndex: number, beeExpiry: number, currentTiles: Tile[]): number => {
     const tile = currentTiles[position];
-    const baseReward = tile.effect === "QUESTION" ? 232.5 : tile.reward;
+    let baseReward = tile.reward;
+    if (tile.effect === "QUESTION") baseReward = 232.5;
+    else if (tile.effect === "ROCKET" || tile.effect === "MOLE_2" || tile.effect === "MOLE_3" || tile.effect === "SPRING") {
+      baseReward = 100;
+    }
 
     let multiplier = 1.0;
     switch (tile.modifier) {
@@ -166,35 +180,44 @@ export default function Home() {
     let maxScore = -100000;
     let bestFinalPos = 0;
     let bestPerm: number[] = [];
+    let bestUsedEffects = new Set<string>();
     const perms = generatePermutations(outcome);
     for (const perm of perms) {
       let tempPos = startPos;
+      let tempAbsOffset = startPos;
       let tempTotal = 0;
+      let activatedEffects = new Set<string>();
+      
       perm.forEach((die, idx) => {
-        const nextResult = getNextPosition(tempPos, die.move, currentTiles);
+        const nextResult = getNextPosition(tempPos, die.move, currentTiles, activatedEffects, tempAbsOffset);
         tempPos = nextResult.pos;
+        tempAbsOffset = nextResult.nextAbsOffset;
         tempTotal += (getFinalReward(tempPos, idx + 1, beeExpiry, currentTiles) * die.mul) + (nextResult.laps * 400);
       });
       if (tempTotal > maxScore) {
         maxScore = tempTotal;
         bestFinalPos = tempPos;
         bestPerm = perm.map(d => d.original);
+        bestUsedEffects = new Set(activatedEffects);
       }
     }
-    return { maxScore, bestFinalPos, bestPerm };
+    return { maxScore, bestFinalPos, bestPerm, bestUsedEffects };
   };
 
   const calculateOptimalPath = () => {
-    let count100 = 0, count300 = 0, count400 = 0, count600 = 0;
+    let count100AndMovements = 0;
+    let count300 = 0, count400 = 0, count600 = 0;
     let countMole2 = 0, countMole3 = 0, countSpring = 0;
     let countGolden = 0, countHomun = 0, countMystic = 0;
 
     tiles.forEach(t => {
-      if (t.index === 0 || t.index === 10 || t.index === 20 || t.index === 30) return;
+      if (t.index === 0 || t.index === 20 || t.index === 30) return;
       
-      const isEffectTile = (t.effect === 'MOLE_2' || t.effect === 'MOLE_3' || t.effect === 'SPRING');
-      if (!isEffectTile) {
-        if (t.reward === 100) count100++;
+      const isMovement = (t.effect === 'ROCKET' || t.effect === 'MOLE_2' || t.effect === 'MOLE_3' || t.effect === 'SPRING');
+      if (isMovement) {
+          count100AndMovements++;
+      } else {
+        if (t.reward === 100) count100AndMovements++;
         if (t.reward === 300) count300++;
         if (t.reward === 400) count400++;
         if (t.reward === 600) count600++;
@@ -203,19 +226,20 @@ export default function Home() {
       if (t.effect === 'MOLE_2') countMole2++;
       if (t.effect === 'MOLE_3') countMole3++;
       if (t.effect === 'SPRING') countSpring++;
+      
       if (t.modifier === 'GOLDEN_BEE') countGolden++;
       if (t.modifier === 'HOMUNCULUS') countHomun++;
       if (t.modifier === 'MYSTERIOUS_BEE') countMystic++;
     });
 
     const errors: ValidationError[] = [];
-    if (count100 !== 8) errors.push({ name: "100점 발판", current: count100, required: 8 });
+    if (count100AndMovements !== 12) errors.push({ name: "100점+이동 발판", current: count100AndMovements, required: 12 });
     if (count300 !== 10) errors.push({ name: "300점 발판", current: count300, required: 10 });
     if (count400 !== 10) errors.push({ name: "400점 발판", current: count400, required: 10 });
     if (count600 !== 5) errors.push({ name: "600점 발판", current: count600, required: 5 });
-    if (countMole2 !== 1) errors.push({ name: "두더지(-2칸)", current: countMole2, required: 1 });
-    if (countMole3 !== 1) errors.push({ name: "두더지(-3칸)", current: countMole3, required: 1 });
-    if (countSpring !== 1) errors.push({ name: "스프링(+3칸)", current: countSpring, required: 1 });
+    if (countMole2 > 1) errors.push({ name: "두더지(-2칸)", current: countMole2, required: "최대 1" });
+    if (countMole3 > 1) errors.push({ name: "두더지(-3칸)", current: countMole3, required: "최대 1" });
+    if (countSpring > 1) errors.push({ name: "스프링(+3칸)", current: countSpring, required: "최대 1" });
     if (countGolden !== 1) errors.push({ name: "황금벌 몬스터", current: countGolden, required: 1 });
     if (countHomun !== 1) errors.push({ name: "호문스큘러 몬스터", current: countHomun, required: 1 });
     if (countMystic > 1) errors.push({ name: "신비벌 몬스터", current: countMystic, required: "최대 1" });
@@ -277,6 +301,7 @@ export default function Home() {
       order: baseResult.bestPerm,
       totalReward: baseResult.maxScore,
       finalPosition: baseResult.bestFinalPos,
+      usedEffects: Array.from(baseResult.bestUsedEffects),
       specialAnalyses: analyses
     });
   };
@@ -298,7 +323,32 @@ export default function Home() {
       setActiveBrush("REWARD"); // 클릭 후 자동으로 기본 데코레이터(REWARD) 모드로 복귀하여 연속 클릭 실수를 방지합니다.
       return;
     }
-    if (index === 0 || index === 10 || index === 20 || index === 30) return;
+
+    if (index === 10 && activeBrush !== "MODIFIER") {
+      setTiles(prev => prev.map(t => {
+        if (t.index === 10) {
+          const isRocket = t.effect === "ROCKET";
+          return { ...t, effect: isRocket ? "NONE" : "ROCKET", reward: 100 };
+        }
+        return t;
+      }));
+      return;
+    }
+
+    if (index === 0 || index === 20 || index === 30) return;
+
+    if (activeBrush === "MODIFIER") {
+      const clickedTile = tiles.find(t => t.index === index);
+      if (clickedTile) {
+        if (brushModifier === "MYSTERIOUS_BEE") {
+          if (clickedTile.modifier === "MYSTERIOUS_BEE") setBeeMoves(0);
+          else setBeeMoves(10);
+        } else if (clickedTile.modifier === "MYSTERIOUS_BEE") {
+          setBeeMoves(0);
+        }
+      }
+    }
+
     setTiles(prev => prev.map(t => {
       // 보상 브러시 처리
       if (activeBrush === "REWARD") {
@@ -334,15 +384,26 @@ export default function Home() {
     }));
   };
 
-  const applyTurn = (nextPos: number) => {
+  const applyTurn = (nextPos: number, usedEffects: string[]) => {
     setCurrentPos(nextPos);
     setBeeMoves(prev => Math.max(0, prev - 3));
+    
+    if (usedEffects && usedEffects.length > 0) {
+      const usedIndices = usedEffects.map(e => parseInt(e.split('_')[1]));
+      setTiles(prev => prev.map(t => {
+        if (usedIndices.includes(t.index) && (t.effect === "ROCKET" || t.effect === "MOLE_2" || t.effect === "MOLE_3" || t.effect === "SPRING")) {
+          return { ...t, effect: "NONE", reward: 100 };
+        }
+        return t;
+      }));
+    }
+
     setResult(null);
     setSelectedAnalysisIndex(null);
     setSelectedOutcomes({});
     setActiveBrush("MODIFIER");
     setBrushModifier("HOMUNCULUS");
-    alert("✨ 다음 턴 준비 완료!\n\n1. 캐릭터가 도착 지점으로 이동했습니다.\n2. 신비벌 남은 횟수가 3 깎였습니다.\n3. 새롭게 이동한 호문쿨루스 위치를 맵에 클릭해주세요!\n4. 새로 굴린 주사위 3개를 입력하세요.");
+    setTurnAlert(true);
   };
 
   return (
@@ -364,7 +425,7 @@ export default function Home() {
               setTiles(initialTiles);
               setDiceValues([2, 3, 5]);
               setCurrentPos(0);
-              setBeeMoves(10);
+              setBeeMoves(0);
               setResult(null);
               setSelectedAnalysisIndex(null);
               setSelectedOutcomes({});
@@ -530,7 +591,7 @@ export default function Home() {
                       <div className="hidden md:block w-px h-10 bg-white/20" />
                       <div><p className="text-[9px] md:text-[10px] font-black text-green-200 uppercase mb-0.5">확정 점수</p><p className="text-xl md:text-3xl font-black drop-shadow-sm">{Math.floor(result.totalReward).toLocaleString()} <span className="text-[9px] opacity-60">PTS</span></p></div>
                     </div>
-                    <button onClick={() => applyTurn(result.finalPosition)} className="w-full py-1.5 md:py-2 bg-green-800/80 hover:bg-green-800 rounded-xl font-black text-[10px] md:text-[11px] text-green-50 shadow-sm transition-all border border-green-700">이 기본 경로로 다음 턴 넘어가기 ➔</button>
+                    <button onClick={() => applyTurn(result.finalPosition, result.usedEffects)} className="w-full py-1.5 md:py-2 bg-green-800/80 hover:bg-green-800 rounded-xl font-black text-[10px] md:text-[11px] text-green-50 shadow-sm transition-all border border-green-700">이 기본 경로로 다음 턴 넘어가기 ➔</button>
                   </div>
 
                   {result.specialAnalyses && result.specialAnalyses.length > 0 && (
@@ -630,7 +691,7 @@ export default function Home() {
                                           <p className="text-lg md:text-2xl font-black text-green-400 drop-shadow-md leading-none">{Math.floor(specificResult.maxScore).toLocaleString()} <span className="text-[10px] md:text-xs opacity-60 text-white font-bold ml-1">PTS</span></p>
                                         </div>
                                       </div>
-                                      <button onClick={() => applyTurn(specificResult!.bestFinalPos)} className="w-full py-2 bg-purple-700/50 hover:bg-purple-600 rounded-lg font-black text-[10px] md:text-xs text-purple-100 shadow-md transition-all border border-purple-500/50">이 특수 경로로 다음 턴 넘어가기 ➔</button>
+                                      <button onClick={() => applyTurn(specificResult!.bestFinalPos, Array.from(specificResult!.bestUsedEffects))} className="w-full py-2 bg-purple-700/50 hover:bg-purple-600 rounded-lg font-black text-[10px] md:text-xs text-purple-100 shadow-md transition-all border border-purple-500/50">이 특수 경로로 다음 턴 넘어가기 ➔</button>
                                     </div>
                                   )}
                                 </div>
@@ -675,6 +736,46 @@ export default function Home() {
             </div>
             
             <button onClick={() => setValidationErrors([])} className="w-full py-3 md:py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-black text-sm md:text-base shadow-lg transition-all active:scale-95">확인했습니다</button>
+          </div>
+        </div>
+      )}
+
+      {turnAlert && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-auto p-4" style={{ animation: 'fadeIn 0.2s ease-out' }}>
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setTurnAlert(false)}></div>
+          <div className="relative z-[110] bg-white rounded-[2rem] p-6 md:p-8 max-w-sm w-[90%] md:w-full shadow-2xl flex flex-col items-center" style={{ animation: 'slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1)' }}>
+            <div className="w-16 h-16 bg-green-100 text-green-500 rounded-[1.25rem] flex items-center justify-center mb-4 shadow-inner">
+               <Sparkles size={32} />
+            </div>
+            <h3 className="text-xl md:text-2xl font-black text-slate-800 mb-2">다음 턴 준비 완료!</h3>
+            <p className="text-[11px] md:text-sm text-slate-500 text-center mb-6 leading-relaxed font-bold">주사위를 굴리고 새로운 이동을 준비하세요.</p>
+            
+            <div className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 mb-6 space-y-3 shadow-inner">
+              <div className="flex items-center gap-3 text-xs md:text-sm font-bold text-slate-700">
+                <span className="w-6 h-6 rounded-full bg-green-200 text-green-700 flex items-center justify-center shrink-0 font-black">1</span>
+                캐릭터가 도착 지점으로 이동했습니다.
+              </div>
+              <div className="flex items-center gap-3 text-xs md:text-sm font-bold text-slate-700">
+                <span className="w-6 h-6 rounded-full bg-purple-200 text-purple-700 flex items-center justify-center shrink-0 font-black">2</span>
+                신비벌 남은 횟수가 3 감소했습니다.
+              </div>
+              <div className="flex items-center gap-3 text-xs md:text-sm font-bold text-slate-700">
+                <span className="w-6 h-6 rounded-full bg-blue-200 text-blue-700 flex items-center justify-center shrink-0 font-black">3</span>
+                사용한 이동 발판이 100점으로 변경되었습니다.
+              </div>
+              <div className="flex items-start gap-3 text-xs md:text-sm font-bold text-slate-700 bg-orange-50 p-2.5 rounded-xl border border-orange-100/50">
+                <span className="w-6 h-6 rounded-full bg-orange-200 text-orange-700 flex items-center justify-center shrink-0 font-black mt-0.5">4</span>
+                <span className="leading-snug text-orange-900"><span className="text-orange-600 font-black">호문스큘러 브러시</span>가 자동 선택되었습니다.<br/>방금 새로 이동한 위치에 찍어주세요!</span>
+              </div>
+              <div className="flex items-center gap-3 text-xs md:text-sm font-bold text-slate-700">
+                <span className="w-6 h-6 rounded-full bg-rose-200 text-rose-700 flex items-center justify-center shrink-0 font-black">5</span>
+                새로 굴린 주사위 눈금 3개를 입력하세요.
+              </div>
+            </div>
+            
+            <button onClick={() => setTurnAlert(false)} className="w-full py-3.5 md:py-4 bg-green-600 hover:bg-green-500 text-white rounded-xl font-black text-sm md:text-base shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2">
+              <Play size={18} className="fill-white" /> 확인하고 진행하기
+            </button>
           </div>
         </div>
       )}
