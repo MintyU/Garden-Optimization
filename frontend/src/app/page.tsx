@@ -12,6 +12,7 @@ interface Tile {
   reward: number;
   effect: EffectType;
   modifier: ModifierType;
+  isModifierActive?: boolean;
 }
 
 interface SpecialAnalysis {
@@ -27,6 +28,7 @@ interface StrategyResult {
   totalReward: number;
   finalPosition: number;
   usedEffects: string[];
+  finalActiveModifiers: number[];
   specialAnalyses?: SpecialAnalysis[];
 }
 
@@ -136,7 +138,7 @@ export default function Home() {
     }
   };
 
-  const getFinalReward = (position: number, moveIndex: number, beeExpiry: number, currentTiles: Tile[]): number => {
+  const getFinalReward = (position: number, moveIndex: number, beeExpiry: number, currentTiles: Tile[], activeModifiers: Set<number>): number => {
     const tile = currentTiles[position];
     let baseReward = tile.reward;
     if (tile.effect === "QUESTION") baseReward = 232.5;
@@ -145,13 +147,21 @@ export default function Home() {
     }
 
     let multiplier = 1.0;
-    switch (tile.modifier) {
-      case "GOLDEN_BEE": multiplier = 2.0; break;
-      case "HOMUNCULUS": multiplier = 0.5; break;
-      case "MYSTERIOUS_BEE":
-        if (moveIndex <= beeExpiry) multiplier = 3.0;
-        break;
+    if (activeModifiers.has(position)) {
+      if (tile.modifier === "GOLDEN_BEE") {
+         multiplier = 2.0;
+         activeModifiers.delete(position);
+      } else if (tile.modifier === "HOMUNCULUS") {
+         multiplier = 0.5;
+         activeModifiers.delete(position);
+      } else if (tile.modifier === "MYSTERIOUS_BEE") {
+         if (moveIndex <= beeExpiry) {
+            multiplier = 3.0;
+            activeModifiers.delete(position);
+         }
+      }
     }
+
     return baseReward * multiplier;
   };
 
@@ -181,27 +191,48 @@ export default function Home() {
     let bestFinalPos = 0;
     let bestPerm: number[] = [];
     let bestUsedEffects = new Set<string>();
+    let bestActiveModifiers = new Set<number>();
+    
+    const initialActiveModifiers = new Set<number>();
+    currentTiles.forEach(t => {
+       if (t.isModifierActive !== false && (t.modifier === "GOLDEN_BEE" || t.modifier === "HOMUNCULUS" || t.modifier === "MYSTERIOUS_BEE")) {
+           initialActiveModifiers.add(t.index);
+       }
+    });
+
     const perms = generatePermutations(outcome);
     for (const perm of perms) {
       let tempPos = startPos;
       let tempAbsOffset = startPos;
       let tempTotal = 0;
       let activatedEffects = new Set<string>();
+      let activeModifiers = new Set(initialActiveModifiers);
       
       perm.forEach((die, idx) => {
+        let prevAbsOffset = tempAbsOffset;
         const nextResult = getNextPosition(tempPos, die.move, currentTiles, activatedEffects, tempAbsOffset);
         tempPos = nextResult.pos;
         tempAbsOffset = nextResult.nextAbsOffset;
-        tempTotal += (getFinalReward(tempPos, idx + 1, beeExpiry, currentTiles) * die.mul) + (nextResult.laps * 400);
+        
+        tempTotal += (getFinalReward(tempPos, idx + 1, beeExpiry, currentTiles, activeModifiers) * die.mul) + (nextResult.laps * 400);
+
+        if (Math.floor(prevAbsOffset / 40) < Math.floor(tempAbsOffset / 40)) {
+            currentTiles.forEach(t => {
+                if (t.modifier === "GOLDEN_BEE" || t.modifier === "HOMUNCULUS") {
+                    activeModifiers.add(t.index);
+                }
+            });
+        }
       });
       if (tempTotal > maxScore) {
         maxScore = tempTotal;
         bestFinalPos = tempPos;
         bestPerm = perm.map(d => d.original);
         bestUsedEffects = new Set(activatedEffects);
+        bestActiveModifiers = new Set(activeModifiers);
       }
     }
-    return { maxScore, bestFinalPos, bestPerm, bestUsedEffects };
+    return { maxScore, bestFinalPos, bestPerm, bestUsedEffects, bestActiveModifiers };
   };
 
   const calculateOptimalPath = () => {
@@ -240,8 +271,8 @@ export default function Home() {
     if (countMole2 > 1) errors.push({ name: "두더지(-2칸)", current: countMole2, required: "최대 1" });
     if (countMole3 > 1) errors.push({ name: "두더지(-3칸)", current: countMole3, required: "최대 1" });
     if (countSpring > 1) errors.push({ name: "스프링(+3칸)", current: countSpring, required: "최대 1" });
-    if (countGolden !== 1) errors.push({ name: "황금벌 몬스터", current: countGolden, required: 1 });
-    if (countHomun !== 1) errors.push({ name: "호문스큘러 몬스터", current: countHomun, required: 1 });
+    if (countGolden > 1) errors.push({ name: "황금벌 몬스터", current: countGolden, required: "최대 1" });
+    if (countHomun > 1) errors.push({ name: "호문스큘러 몬스터", current: countHomun, required: "최대 1" });
     if (countMystic > 1) errors.push({ name: "신비벌 몬스터", current: countMystic, required: "최대 1" });
 
     if (errors.length > 0) {
@@ -302,6 +333,7 @@ export default function Home() {
       totalReward: baseResult.maxScore,
       finalPosition: baseResult.bestFinalPos,
       usedEffects: Array.from(baseResult.bestUsedEffects),
+      finalActiveModifiers: Array.from(baseResult.bestActiveModifiers),
       specialAnalyses: analyses
     });
   };
@@ -371,7 +403,7 @@ export default function Home() {
       // 몬스터 브러시 처리
       if (activeBrush === "MODIFIER") {
         if (t.index === index) {
-          return { ...t, modifier: t.modifier === brushModifier ? "NONE" : brushModifier };
+          return { ...t, modifier: t.modifier === brushModifier ? "NONE" : brushModifier, isModifierActive: true };
         }
         // 다른 타일에 이미 해당 몬스터가 칠해져 있다면 초기화 (단일 존재 보장)
         if (brushModifier !== "NONE" && t.modifier === brushModifier) {
@@ -384,19 +416,33 @@ export default function Home() {
     }));
   };
 
-  const applyTurn = (nextPos: number, usedEffects: string[]) => {
+  const applyTurn = (nextPos: number, usedEffects: string[], finalActiveModifiers: number[]) => {
     setCurrentPos(nextPos);
-    setBeeMoves(prev => Math.max(0, prev - 3));
+    const newBeeMoves = Math.max(0, beeMoves - 3);
+    setBeeMoves(newBeeMoves);
     
-    if (usedEffects && usedEffects.length > 0) {
-      const usedIndices = usedEffects.map(e => parseInt(e.split('_')[1]));
-      setTiles(prev => prev.map(t => {
+    setTiles(prev => prev.map(t => {
+      let newT = { ...t };
+      if (usedEffects && usedEffects.length > 0) {
+        const usedIndices = usedEffects.map(e => parseInt(e.split('_')[1]));
         if (usedIndices.includes(t.index) && (t.effect === "ROCKET" || t.effect === "MOLE_2" || t.effect === "MOLE_3" || t.effect === "SPRING")) {
-          return { ...t, effect: "NONE", reward: 100 };
+          newT.effect = "NONE";
+          newT.reward = 100;
         }
-        return t;
-      }));
-    }
+      }
+      
+      if (t.modifier === "GOLDEN_BEE" || t.modifier === "HOMUNCULUS") {
+        newT.isModifierActive = finalActiveModifiers.includes(t.index);
+      }
+      if (t.modifier === "MYSTERIOUS_BEE") {
+        if (!finalActiveModifiers.includes(t.index) || newBeeMoves === 0) {
+          newT.modifier = "NONE";
+        } else {
+          newT.isModifierActive = true;
+        }
+      }
+      return newT;
+    }));
 
     setResult(null);
     setSelectedAnalysisIndex(null);
@@ -514,7 +560,11 @@ export default function Home() {
             </div>
             <div className="space-y-2 pt-2 md:pt-3">
               <label className="text-xs md:text-sm font-black text-slate-500 uppercase inline-block mb-1 md:mb-2 w-full text-center xl:text-left">신비한 벌 남은 이동 횟수</label>
-              <input type="number" className="w-full p-3 md:p-4 bg-white/10 rounded-xl border border-white/10 font-black text-center text-xl md:text-2xl outline-none focus:border-green-400" value={beeMoves} onChange={(e) => setBeeMoves(parseInt(e.target.value) || 0)} />
+              <input type="number" className="w-full p-3 md:p-4 bg-white/10 rounded-xl border border-white/10 font-black text-center text-xl md:text-2xl outline-none focus:border-green-400" value={beeMoves} onChange={(e) => {
+                const newVal = parseInt(e.target.value) || 0;
+                setBeeMoves(newVal);
+                if (newVal === 0) setTiles(prev => prev.map(t => t.modifier === "MYSTERIOUS_BEE" ? { ...t, modifier: "NONE" } : t));
+              }} />
             </div>
             <button onClick={calculateOptimalPath} className="w-full py-4 bg-green-600 hover:bg-green-500 rounded-2xl font-black text-lg shadow-lg transition-all flex items-center justify-center gap-2">
               <Play size={20} /> 최적 경로 즉시 계산
@@ -553,7 +603,7 @@ export default function Home() {
                         <div className="flex flex-col items-center justify-center">
                           {tile.modifier !== 'NONE' && (
                             <div
-                              className={`px-1 rounded-sm mb-0.5 shadow-sm border border-white/20 flex items-center justify-center ${tile.modifier === 'HOMUNCULUS' ? 'bg-rose-600' : 'bg-green-600'}`}
+                              className={`px-1 rounded-sm mb-0.5 shadow-sm border border-white/20 flex items-center justify-center ${tile.modifier === 'HOMUNCULUS' ? 'bg-rose-600' : 'bg-green-600'} ${tile.isModifierActive === false ? 'opacity-30' : ''}`}
                               style={{ textShadow: 'none' }}
                             >
                               <span className="text-[8px] md:text-[11px] font-black text-white leading-none tracking-tighter">
@@ -564,18 +614,18 @@ export default function Home() {
                             </div>
                           )}
                           <span className={tile.modifier !== 'NONE' ? "text-sm md:text-xl leading-none" : ""}>
-                            {tile.modifier === 'GOLDEN_BEE' ? tile.reward * 2 :
-                              tile.modifier === 'HOMUNCULUS' ? Math.floor(tile.reward / 2) :
-                                tile.modifier === 'MYSTERIOUS_BEE' ? tile.reward * 3 :
+                            {tile.modifier === 'GOLDEN_BEE' && tile.isModifierActive !== false ? tile.reward * 2 :
+                              tile.modifier === 'HOMUNCULUS' && tile.isModifierActive !== false ? Math.floor(tile.reward / 2) :
+                                tile.modifier === 'MYSTERIOUS_BEE' && tile.isModifierActive !== false ? tile.reward * 3 :
                                   tile.reward}
                           </span>
                         </div>
                       )}
                     </div>
                     <div className="absolute -bottom-1 -right-1 flex gap-0.5 scale-75 md:scale-100">
-                      {tile.modifier === 'GOLDEN_BEE' && <div className="bg-yellow-400 p-1 rounded-full border border-white shadow-sm"><Zap size={10} className="text-white fill-white" /></div>}
-                      {tile.modifier === 'HOMUNCULUS' && <div className="bg-emerald-500 p-1 rounded-full border border-white shadow-sm"><Ghost size={10} className="text-white fill-white" /></div>}
-                      {tile.modifier === 'MYSTERIOUS_BEE' && <div className="bg-purple-600 p-1 rounded-full border border-white shadow-sm"><Zap size={10} className="text-white fill-white" /></div>}
+                      {tile.modifier === 'GOLDEN_BEE' && <div className={`bg-yellow-400 p-1 rounded-full border border-white shadow-sm ${tile.isModifierActive === false ? 'opacity-30' : ''}`}><Zap size={10} className="text-white fill-white" /></div>}
+                      {tile.modifier === 'HOMUNCULUS' && <div className={`bg-emerald-500 p-1 rounded-full border border-white shadow-sm ${tile.isModifierActive === false ? 'opacity-30' : ''}`}><Ghost size={10} className="text-white fill-white" /></div>}
+                      {tile.modifier === 'MYSTERIOUS_BEE' && <div className={`bg-purple-600 p-1 rounded-full border border-white shadow-sm ${tile.isModifierActive === false ? 'opacity-30' : ''}`}><Zap size={10} className="text-white fill-white" /></div>}
                     </div>
                     {isCurrent && <div className="absolute -top-6 animate-bounce"><MousePointer2 size={24} className="text-orange-600 fill-orange-500 drop-shadow-lg" /></div>}
                   </div>
@@ -591,7 +641,7 @@ export default function Home() {
                       <div className="hidden md:block w-px h-10 bg-white/20" />
                       <div><p className="text-[9px] md:text-[10px] font-black text-green-200 uppercase mb-0.5">확정 점수</p><p className="text-xl md:text-3xl font-black drop-shadow-sm">{Math.floor(result.totalReward).toLocaleString()} <span className="text-[9px] opacity-60">PTS</span></p></div>
                     </div>
-                    <button onClick={() => applyTurn(result.finalPosition, result.usedEffects)} className="w-full py-1.5 md:py-2 bg-green-800/80 hover:bg-green-800 rounded-xl font-black text-[10px] md:text-[11px] text-green-50 shadow-sm transition-all border border-green-700">이 기본 경로로 다음 턴 넘어가기 ➔</button>
+                    <button onClick={() => applyTurn(result.finalPosition, result.usedEffects, result.finalActiveModifiers)} className="w-full py-1.5 md:py-2 bg-green-800/80 hover:bg-green-800 rounded-xl font-black text-[10px] md:text-[11px] text-green-50 shadow-sm transition-all border border-green-700">이 기본 경로로 다음 턴 넘어가기 ➔</button>
                   </div>
 
                   {result.specialAnalyses && result.specialAnalyses.length > 0 && (
@@ -691,7 +741,7 @@ export default function Home() {
                                           <p className="text-lg md:text-2xl font-black text-green-400 drop-shadow-md leading-none">{Math.floor(specificResult.maxScore).toLocaleString()} <span className="text-[10px] md:text-xs opacity-60 text-white font-bold ml-1">PTS</span></p>
                                         </div>
                                       </div>
-                                      <button onClick={() => applyTurn(specificResult!.bestFinalPos, Array.from(specificResult!.bestUsedEffects))} className="w-full py-2 bg-purple-700/50 hover:bg-purple-600 rounded-lg font-black text-[10px] md:text-xs text-purple-100 shadow-md transition-all border border-purple-500/50">이 특수 경로로 다음 턴 넘어가기 ➔</button>
+                                      <button onClick={() => applyTurn(specificResult!.bestFinalPos, Array.from(specificResult!.bestUsedEffects), Array.from(specificResult!.bestActiveModifiers))} className="w-full py-2 bg-purple-700/50 hover:bg-purple-600 rounded-lg font-black text-[10px] md:text-xs text-purple-100 shadow-md transition-all border border-purple-500/50">이 특수 경로로 다음 턴 넘어가기 ➔</button>
                                     </div>
                                   )}
                                 </div>
@@ -761,11 +811,11 @@ export default function Home() {
               </div>
               <div className="flex items-center gap-3 text-xs md:text-sm font-bold text-slate-700">
                 <span className="w-6 h-6 rounded-full bg-blue-200 text-blue-700 flex items-center justify-center shrink-0 font-black">3</span>
-                사용한 이동 발판이 100점으로 변경되었습니다.
+                사용한 1회용 타일이 비활성화되거나 한 바퀴를 돌아 재생성 되었습니다.
               </div>
               <div className="flex items-start gap-3 text-xs md:text-sm font-bold text-slate-700 bg-orange-50 p-2.5 rounded-xl border border-orange-100/50">
                 <span className="w-6 h-6 rounded-full bg-orange-200 text-orange-700 flex items-center justify-center shrink-0 font-black mt-0.5">4</span>
-                <span className="leading-snug text-orange-900"><span className="text-orange-600 font-black">호문스큘러 브러시</span>가 자동 선택되었습니다.<br/>방금 새로 이동한 위치에 찍어주세요!</span>
+                <span className="leading-snug text-orange-900"><span className="text-orange-600 font-black">호문스큘러와 황금벌 브러시</span>를 사용해<br/>두 몬스터의 위치를 맵에 새로 설정해주세요! (호문스큘러 자동 선택됨)</span>
               </div>
               <div className="flex items-center gap-3 text-xs md:text-sm font-bold text-slate-700">
                 <span className="w-6 h-6 rounded-full bg-rose-200 text-rose-700 flex items-center justify-center shrink-0 font-black">5</span>
