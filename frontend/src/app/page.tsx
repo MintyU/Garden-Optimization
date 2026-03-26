@@ -24,7 +24,7 @@ interface SpecialAnalysis {
 }
 
 interface StrategyResult {
-  order: number[];
+  order: { value: number; isSpecial?: boolean; label?: string }[];
   totalReward: number;
   finalPosition: number;
   usedEffects: string[];
@@ -184,12 +184,12 @@ export default function Home() {
     { move: D * -3, mul: 1, label: "뒤로 x3" }
   ];
 
-  type OutcomeItem = { move: number, mul: number, original: number };
+  type OutcomeItem = { move: number, mul: number, original: number, isSpecial?: boolean, label?: string };
 
   const evaluateOutcome = (outcome: OutcomeItem[], startPos: number, beeExpiry: number, currentTiles: Tile[]) => {
     let maxScore = -100000;
     let bestFinalPos = 0;
-    let bestPerm: number[] = [];
+    let bestPerm: { value: number; isSpecial: boolean; label?: string }[] = [];
     let bestUsedEffects = new Set<string>();
     let bestActiveModifiers = new Set<number>();
     
@@ -227,7 +227,7 @@ export default function Home() {
       if (tempTotal > maxScore) {
         maxScore = tempTotal;
         bestFinalPos = tempPos;
-        bestPerm = perm.map(d => d.original);
+        bestPerm = perm.map(d => ({ value: d.original, isSpecial: !!d.isSpecial, label: d.label }));
         bestUsedEffects = new Set(activatedEffects);
         bestActiveModifiers = new Set(activeModifiers);
       }
@@ -284,7 +284,7 @@ export default function Home() {
     setSelectedAnalysisIndex(null);
     setSelectedOutcomes({});
 
-    const baseOutcome: OutcomeItem[] = dice.map(d => ({ move: d, mul: 1, original: d }));
+    const baseOutcome: OutcomeItem[] = dice.map(d => ({ move: d, mul: 1, original: d, isSpecial: false }));
     const baseResult = evaluateOutcome(baseOutcome, currentPos, beeMoves, tiles);
 
     const subsets = [
@@ -297,7 +297,7 @@ export default function Home() {
       if (subset.length === 0) return;
 
       const possibilities = dice.map((d, i) =>
-        subset.includes(i) ? getSpecialOutcomes(d).map(o => ({ ...o, original: d })) : [{ move: d, mul: 1, original: d }]
+        subset.includes(i) ? getSpecialOutcomes(d).map(o => ({ ...o, original: d, isSpecial: true })) : [{ move: d, mul: 1, original: d, isSpecial: false }]
       );
 
       const outcomes: OutcomeItem[][] = possibilities.reduce<OutcomeItem[][]>((a, b) =>
@@ -637,7 +637,7 @@ export default function Home() {
                 <div className="w-[85%] max-h-[85%] max-w-2xl overflow-y-auto pointer-events-auto bg-white/90 backdrop-blur-xl rounded-[2.5rem] p-4 md:p-5 shadow-[0_0_50px_rgba(0,0,0,0.15)] border border-slate-200/50 animate-in zoom-in-95 duration-500 flex flex-col gap-3 mx-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
                   <div className="bg-green-600 rounded-[1.5rem] p-3.5 md:p-4 shadow-lg text-white border-b-4 border-green-800 flex flex-col items-center gap-2.5 md:gap-3 shrink-0">
                     <div className="flex flex-row items-center justify-around w-full text-center gap-3">
-                      <div><p className="text-[9px] md:text-[10px] font-black text-green-200 uppercase mb-0.5">최적 주사위 순서</p><p className="text-2xl md:text-4xl font-black italic tracking-tighter drop-shadow-sm">{result.order.join(" ➔ ")}</p></div>
+                      <div><p className="text-[9px] md:text-[10px] font-black text-green-200 uppercase mb-0.5">최적 주사위 순서</p><p className="text-2xl md:text-4xl font-black italic tracking-tighter drop-shadow-sm">{result.order.map(o => o.value).join(" ➔ ")}</p></div>
                       <div className="hidden md:block w-px h-10 bg-white/20" />
                       <div><p className="text-[9px] md:text-[10px] font-black text-green-200 uppercase mb-0.5">확정 점수</p><p className="text-xl md:text-3xl font-black drop-shadow-sm">{Math.floor(result.totalReward).toLocaleString()} <span className="text-[9px] opacity-60">PTS</span></p></div>
                     </div>
@@ -658,9 +658,9 @@ export default function Home() {
                               if (analysis.targetIndices.includes(dIdx)) {
                                 const outcomeKey = selectedOutcomes[dIdx];
                                 const effect = getSpecialOutcomes(d)[outcomeKey];
-                                return { move: effect.move, mul: effect.mul, original: d };
+                                return { move: effect.move, mul: effect.mul, original: d, isSpecial: true, label: effect.label };
                               }
-                              return { move: d, mul: 1, original: d };
+                              return { move: d, mul: 1, original: d, isSpecial: false };
                             });
                             specificResult = evaluateOutcome(customOutcome, currentPos, beeMoves, tiles);
                           }
@@ -734,7 +734,21 @@ export default function Home() {
                                       <div className="bg-gradient-to-r from-purple-900/40 to-slate-900/40 p-2.5 md:p-3 rounded-xl border border-purple-500/30 flex items-center justify-between shadow-inner">
                                         <div className="flex flex-col justify-center">
                                           <p className="text-[10px] md:text-xs font-black text-purple-300/80 uppercase mb-1">맞춤 최적 순서</p>
-                                          <p className="text-lg md:text-2xl font-black italic text-white tracking-widest drop-shadow-md leading-none">{specificResult.bestPerm.join(" ➔ ")}</p>
+                                          <div className="flex items-center gap-1.5 md:gap-2 text-lg md:text-2xl font-black italic tracking-widest drop-shadow-md leading-none mt-4 md:mt-5">
+                                              {specificResult.bestPerm.map((p, pIdx) => (
+                                                <div key={pIdx} className="flex items-center gap-1.5 md:gap-2">
+                                                  <span className={`relative flex flex-col items-center justify-center ${p.isSpecial ? "text-purple-300 drop-shadow-[0_0_8px_rgba(216,180,254,0.8)]" : "text-white"}`}>
+                                                    {p.isSpecial && p.label && (
+                                                      <span className="absolute -top-4 text-[8px] md:text-[9px] text-purple-200 font-bold whitespace-nowrap bg-purple-900/80 px-1 py-0.5 rounded shadow-sm leading-none border border-purple-500/50 not-italic tracking-normal">
+                                                        {p.label}
+                                                      </span>
+                                                    )}
+                                                    <span>{p.value}{p.isSpecial && <span className="text-[14px] md:text-lg text-purple-400 not-italic ml-[2px] relative top-[-2px]">★</span>}</span>
+                                                  </span>
+                                                  {pIdx < specificResult.bestPerm.length - 1 && <span className="text-[14px] md:text-lg text-purple-500/50">➔</span>}
+                                                </div>
+                                              ))}
+                                            </div>
                                         </div>
                                         <div className="text-right flex flex-col justify-center">
                                           <p className="text-[10px] md:text-xs font-black text-purple-300/80 uppercase mb-1">상황 맞춤 점수</p>
